@@ -341,7 +341,6 @@ async function handleSendCode(request, env) {
   }
 
   const code = genCode();
-  await env.DB.prepare('DELETE FROM email_codes WHERE email = ?1').bind(email).run();
   await env.DB.prepare(
     `INSERT INTO email_codes (email, code, purpose, expires_at, attempts, used, created_at)
      VALUES (?1, ?2, 'register', ?3, 0, 0, ?4)`
@@ -382,19 +381,26 @@ async function handleRegister(request, env) {
   const username = String(body.username || '').trim();
   const password = String(body.password || '');
   const email = String(body.email || '').trim().toLowerCase();
-  const code = String(body.code || '').trim();
   if (!USERNAME_RE.test(username)) throw new HttpError('用户名需 2–16 位，仅限中英文、数字、下划线');
   if (password.length < 6 || password.length > 32) throw new HttpError('密码需 6–32 位');
   if (!EMAIL_RE.test(email)) throw new HttpError('邮箱格式不正确');
-  if (!code) throw new HttpError('请填写邮箱验证码');
+
+  if (env.TURNSTILE_SECRET) {
+    const token = String((body.turnstileToken || '')).trim();
+    if (!token) throw new HttpError('请先完成人机验证');
+    const form = new URLSearchParams();
+    form.set('secret', env.TURNSTILE_SECRET);
+    form.set('response', token);
+    const vr = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form });
+    const vj = await vr.json().catch(() => ({}));
+    if (!vj.success) throw new HttpError('人机验证未通过，请刷新后重试', 400);
+  }
 
   const existing = await env.DB.prepare('SELECT id FROM users WHERE username = ?1').bind(username).first();
   if (existing) throw new HttpError('该用户名已被占用', 409);
 
   const mailTaken = await env.DB.prepare('SELECT id FROM users WHERE email = ?1').bind(email).first();
   if (mailTaken) throw new HttpError('该邮箱已被注册', 409);
-
-  await verifyEmailCode(env, email, code);
 
   const total = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
   let role = 'user';
@@ -420,7 +426,6 @@ async function handleRegister(request, env) {
 
   const headers = new Headers({ 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   headers.append('Set-Cookie', sessionCookie(token, SESSION_DAYS * 86400));
-  await env.DB.prepare('DELETE FROM email_codes WHERE email = ?1').bind(email).run();
   return new Response(JSON.stringify({ ok: true, user: { username, role, email } }), { status: 200, headers });
 }
 
