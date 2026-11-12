@@ -1,22 +1,17 @@
-// 福州鳌峰学校 · 校园论坛 API
-// Cloudflare Pages Functions + D1
-// 路由前缀 /api/
-
 const SESSION_COOKIE = 'af_sid';
 const SESSION_DAYS = 30;
+const SESSION_SEC = SESSION_DAYS * 86400;
 
 const enc = new TextEncoder();
 
-/* ---------------- 基础工具 ---------------- */
-
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store'
-    }
-  });
+function json(data, status = 200, extraHeaders = {}) {
+  const headers = {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    ...extraHeaders
+  };
+  return new Response(JSON.stringify(data), { status, headers });
 }
 
 function fail(msg, status = 400) {
@@ -61,6 +56,13 @@ function sessionCookie(token, maxAge) {
   return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
 }
 
+class HttpError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function currentUser(request, env) {
   const token = parseCookies(request)[SESSION_COOKIE];
   if (!token) return null;
@@ -70,7 +72,8 @@ async function currentUser(request, env) {
      WHERE s.token = ?1`
   ).bind(token).first();
   if (!row) return null;
-  if (row.expires_at < Math.floor(Date.now() / 1000)) {
+  const now = Math.floor(Date.now() / 1000);
+  if (row.expires_at < now) {
     await env.DB.prepare('DELETE FROM sessions WHERE token = ?1').bind(token).run();
     return null;
   }
@@ -79,13 +82,6 @@ async function currentUser(request, env) {
 
 function requireUser(user) {
   if (!user) throw new HttpError('请先登录', 401);
-}
-
-class HttpError extends Error {
-  constructor(message, status = 400) {
-    super(message);
-    this.status = status;
-  }
 }
 
 function cleanText(value, max) {
@@ -97,8 +93,28 @@ function cleanText(value, max) {
 }
 
 const USERNAME_RE = /^[A-Za-z0-9_\u4e00-\u9fa5]{2,16}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
-/* ---------------- 业务处理 ---------------- */
+const rateMap = new Map();
+
+function rateKey(prefix, key) {
+  return prefix + ':' + key;
+}
+
+function checkRate(key, limit, windowSec) {
+  const now = Math.floor(Date.now() / 1000);
+  let entry = rateMap.get(key);
+  if (!entry) entry = { count: 0, start: now };
+  if (now - entry.start > windowSec) {
+    entry = { count: 0, start: now };
+  }
+  if (entry.count >= limit) {
+    const wait = windowSec - (now - entry.start);
+    throw new HttpError(`请求过于频繁，请等待 ${wait} 秒`, 429);
+  }
+  entry.count += 1;
+  rateMap.set(key, entry);
+}
 
 async function handleMeta(env) {
   const cats = await env.DB.prepare(
@@ -151,6 +167,9 @@ async function handleThreads(url, env) {
 async function handleThread(url, env, user) {
   const id = parseInt(url.searchParams.get('id') || '0', 10);
   if (!id) throw new HttpError('缺少帖子编号');
+  const rpPage = Math.max(1, parseInt(url.searchParams.get('rpPage') || '1', 10) || 1);
+  const rpSize = 50;
+  const rpOffset = (rpPage - 1) * rpSize;
 
   const thread = await env.DB.prepare(
     `SELECT t.*, u.username, u.role AS author_role, c.slug AS cat_slug, c.name AS cat_name,
@@ -169,8 +188,8 @@ async function handleThread(url, env, user) {
      FROM replies r JOIN users u ON u.id = r.user_id
      WHERE r.thread_id = ?1
      ORDER BY r.floor ASC
-     LIMIT 500`
-  ).bind(id).all();
+     LIMIT ? OFFSET ?`
+  ).bind(id, rpSize, rpOffset).all();
 
   let liked = false;
   if (user) {
@@ -182,8 +201,8 @@ async function handleThread(url, env, user) {
   return json({
     thread: { ...thread, views: thread.views + 1, liked },
     replies: replies.results || [],
-    page: 1,
-    size: 500,
+    rpPage,
+    rpSize,
     total: thread.reply_count
   });
 }
@@ -192,7 +211,7 @@ async function handleCreateThread(request, env, user) {
   requireUser(user);
   const body = await request.json().catch(() => ({}));
   const now = Math.floor(Date.now() / 1000);
-  if (user.last_post_at && now - user.last_post_at < 30) throw new HttpError('发帖太快了，歇 30 秒再发');
+  checkRate(rateKey('post', String(user.id)), 1, 10);
 
   const title = cleanText(body.title, 80);
   const content = cleanText(body.content, 8000);
@@ -215,6 +234,7 @@ async function handleReply(request, env, user) {
   requireUser(user);
   const body = await request.json().catch(() => ({}));
   const now = Math.floor(Date.now() / 1000);
+  checkRate(rateKey('reply', String(user.id)), 1, 3);
 
   const threadId = parseInt(body.threadId, 10);
   if (!threadId) throw new HttpError('缺少帖子编号');
@@ -223,13 +243,14 @@ async function handleReply(request, env, user) {
   const thread = await env.DB.prepare('SELECT id, locked FROM threads WHERE id = ?1').bind(threadId).first();
   if (!thread) throw new HttpError('帖子不存在', 404);
   if (thread.locked) throw new HttpError('该帖已被锁定，无法回复', 403);
-  if (user.last_reply_at && now - user.last_reply_at < 6) throw new HttpError('回复太快了，歇几秒再来');
+
+  const floorRow = await env.DB.prepare(
+    'SELECT COALESCE(MAX(floor), 0) + 1 AS next FROM replies WHERE thread_id = ?1'
+  ).bind(threadId).first();
 
   await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO replies (thread_id, user_id, content, floor, created_at)
-       VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(floor), 0) + 1 FROM replies WHERE thread_id = ?1), ?4)`
-    ).bind(threadId, user.id, content, now),
+    env.DB.prepare('INSERT INTO replies (thread_id, user_id, content, floor, created_at) VALUES (?1, ?2, ?3, ?4, ?5)')
+      .bind(threadId, user.id, content, floorRow.next, now),
     env.DB.prepare('UPDATE threads SET reply_count = reply_count + 1, updated_at = ?1 WHERE id = ?2')
       .bind(now, threadId),
     env.DB.prepare('UPDATE users SET last_reply_at = ?1 WHERE id = ?2').bind(now, user.id)
@@ -260,120 +281,19 @@ async function handleLike(request, env, user) {
   return json({ liked: !!liked, count: count.n });
 }
 
-/* ---------------- 邮件验证 ---------------- */
-
-function splitFrom(raw) {
-  const value = String(raw || '').trim();
-  const m = /^(.*)<([^<>]+)>$/.exec(value);
-  if (m) return { name: m[1].trim().replace(/^"|"$/g, ''), email: m[2].trim() };
-  return { name: '', email: value };
-}
-
-async function sendMail(env, to, subject, html) {
-  const from = splitFrom(env.MAIL_FROM);
-  if (!from.email) throw new HttpError('邮件服务未配置：缺少环境变量 MAIL_FROM（发件人地址）', 503);
-
-  if (env.RESEND_API_KEY) {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { authorization: 'Bearer ' + env.RESEND_API_KEY, 'content-type': 'application/json' },
-      body: JSON.stringify({ from: env.MAIL_FROM, to: [to], subject, html })
-    });
-    if (!res.ok) throw new HttpError('验证码邮件发送失败（Resend 返回 ' + res.status + '）', 502);
-    return;
-  }
-
-  if (env.SENDGRID_API_KEY) {
-    const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
-      method: 'POST',
-      headers: { authorization: 'Bearer ' + env.SENDGRID_API_KEY, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: to }] }],
-        from,
-        subject,
-        content: [{ type: 'text/html', value: html }]
-      })
-    });
-    if (!res.ok) throw new HttpError('验证码邮件发送失败（SendGrid 返回 ' + res.status + '）', 502);
-    return;
-  }
-
-  throw new HttpError('邮件服务未配置：请在 Pages 环境变量中设置 RESEND_API_KEY 或 SENDGRID_API_KEY', 503);
-}
-
-function genCode() {
-  const buf = crypto.getRandomValues(new Uint8Array(4));
-  return String((buf[0] * 256 + buf[1]) % 1000000).padStart(6, '0');
-}
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-
-function codeMailHtml(code, school) {
-  return '<div style="font-family:-apple-system,BlinkMacSystemFont,\'PingFang SC\',\'Microsoft YaHei\',sans-serif;max-width:520px;margin:0 auto;border:1px solid #dcdcd6;background:#fffefb">' +
-    '<div style="background:#0e2a45;color:#f2eee5;padding:22px 26px">' +
-      '<div style="font-size:12px;letter-spacing:3px;color:rgba(242,238,229,.6)">CAMPUS FORUM</div>' +
-      '<div style="font-size:19px;letter-spacing:2px;margin-top:6px">' + school + ' · 校园论坛</div>' +
-    '</div>' +
-    '<div style="padding:26px">' +
-      '<p style="margin:0 0 14px;font-size:14px;color:#16181d;line-height:1.8">你正在注册校园论坛账号，本次验证码为：</p>' +
-      '<div style="font-size:30px;letter-spacing:8px;color:#0e2a45;font-weight:700;padding:10px 0">' + code + '</div>' +
-      '<p style="margin:14px 0 0;font-size:13px;color:#6d7278;line-height:1.8">验证码 10 分钟内有效，仅可使用一次。若非本人操作，请忽略本邮件。</p>' +
-    '</div>' +
-    '<div style="padding:14px 26px;border-top:1px solid #dcdcd6;font-size:12px;color:#6d7278">' + school + '</div>' +
-  '</div>';
-}
-
-async function handleSendCode(request, env) {
-  const body = await request.json().catch(() => ({}));
-  const email = String(body.email || '').trim().toLowerCase();
-  if (!EMAIL_RE.test(email)) throw new HttpError('邮箱格式不正确');
-  if (email.length > 120) throw new HttpError('邮箱过长');
-
-  const taken = await env.DB.prepare('SELECT id FROM users WHERE email = ?1').bind(email).first();
-  if (taken) throw new HttpError('该邮箱已被注册', 409);
-
-  const now = Math.floor(Date.now() / 1000);
-  const last = await env.DB.prepare(
-    'SELECT created_at FROM email_codes WHERE email = ?1 ORDER BY id DESC LIMIT 1'
-  ).bind(email).first();
-  if (last && now - last.created_at < 60) {
-    throw new HttpError('发送太频繁，请 ' + (60 - (now - last.created_at)) + ' 秒后再试', 429);
-  }
-
-  const code = genCode();
-  await env.DB.prepare(
-    `INSERT INTO email_codes (email, code, purpose, expires_at, attempts, used, created_at)
-     VALUES (?1, ?2, 'register', ?3, 0, 0, ?4)`
-  ).bind(email, code, now + 600, now).run();
-
-  const school = env.SITE_NAME || '福州鳌峰学校';
-  try {
-    await sendMail(env, email, '【' + school + '·校园论坛】邮箱验证码', codeMailHtml(code, school));
-  } catch (err) {
-    if (env.DEV_ECHO_CODE === '1') {
-      return json({ ok: true, devCode: code, warning: err.message });
-    }
-    await env.DB.prepare('DELETE FROM email_codes WHERE email = ?1 AND code = ?2').bind(email, code).run();
-    throw err;
-  }
-
-  if (env.DEV_ECHO_CODE === '1') return json({ ok: true, devCode: code });
-  return json({ ok: true });
-}
-
-async function verifyEmailCode(env, email, code) {
-  const now = Math.floor(Date.now() / 1000);
-  const row = await env.DB.prepare(
-    'SELECT id, code, expires_at, attempts, used FROM email_codes WHERE email = ?1 ORDER BY id DESC LIMIT 1'
-  ).bind(email).first();
-  if (!row || row.used) throw new HttpError('请先获取邮箱验证码');
-  if (row.expires_at < now) throw new HttpError('验证码已过期，请重新获取');
-  if (row.attempts >= 5) throw new HttpError('验证码错误次数过多，请重新获取', 429);
-  if (row.code !== String(code || '').trim()) {
-    await env.DB.prepare('UPDATE email_codes SET attempts = attempts + 1 WHERE id = ?1').bind(row.id).run();
-    throw new HttpError('验证码不正确');
-  }
-  await env.DB.prepare('UPDATE email_codes SET used = 1 WHERE id = ?1').bind(row.id).run();
+async function verifyTurnstile(env, token) {
+  if (!env.TURNSTILE_SECRET) return;
+  const value = String(token || '').trim();
+  if (!value) throw new HttpError('请先完成人机验证');
+  const form = new URLSearchParams();
+  form.set('secret', env.TURNSTILE_SECRET);
+  form.set('response', value);
+  const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+    method: 'POST',
+    body: form
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!data.success) throw new HttpError('人机验证未通过，请刷新后重试', 400);
 }
 
 async function handleRegister(request, env) {
@@ -381,20 +301,14 @@ async function handleRegister(request, env) {
   const username = String(body.username || '').trim();
   const password = String(body.password || '');
   const email = String(body.email || '').trim().toLowerCase();
+
   if (!USERNAME_RE.test(username)) throw new HttpError('用户名需 2–16 位，仅限中英文、数字、下划线');
   if (password.length < 6 || password.length > 32) throw new HttpError('密码需 6–32 位');
   if (!EMAIL_RE.test(email)) throw new HttpError('邮箱格式不正确');
+  if (email.length > 120) throw new HttpError('邮箱过长');
 
-  if (env.TURNSTILE_SECRET) {
-    const token = String((body.turnstileToken || '')).trim();
-    if (!token) throw new HttpError('请先完成人机验证');
-    const form = new URLSearchParams();
-    form.set('secret', env.TURNSTILE_SECRET);
-    form.set('response', token);
-    const vr = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form });
-    const vj = await vr.json().catch(() => ({}));
-    if (!vj.success) throw new HttpError('人机验证未通过，请刷新后重试', 400);
-  }
+  checkRate(rateKey('register', email), 5, 3600);
+  await verifyTurnstile(env, body.turnstileToken);
 
   const existing = await env.DB.prepare('SELECT id FROM users WHERE username = ?1').bind(username).first();
   if (existing) throw new HttpError('该用户名已被占用', 409);
@@ -404,11 +318,11 @@ async function handleRegister(request, env) {
 
   const total = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
   let role = 'user';
-  const adminKey = env.ADMIN_KEY;
+  const adminKey = String(env.ADMIN_KEY || '').trim();
   if (adminKey) {
     if (String(body.adminKey || '').trim() === adminKey) role = 'admin';
   } else if (total.n === 0) {
-    role = 'admin'; // 未配置 ADMIN_KEY 时，首位注册者成为管理员
+    role = 'admin';
   }
 
   const salt = randomHex(16);
@@ -422,10 +336,10 @@ async function handleRegister(request, env) {
 
   const token = randomHex(32);
   await env.DB.prepare('INSERT INTO sessions (token, user_id, expires_at) VALUES (?1, ?2, ?3)')
-    .bind(token, res.meta.last_row_id, now + SESSION_DAYS * 86400).run();
+    .bind(token, res.meta.last_row_id, now + SESSION_SEC).run();
 
   const headers = new Headers({ 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-  headers.append('Set-Cookie', sessionCookie(token, SESSION_DAYS * 86400));
+  headers.append('Set-Cookie', sessionCookie(token, SESSION_SEC));
   return new Response(JSON.stringify({ ok: true, user: { username, role, email } }), { status: 200, headers });
 }
 
@@ -434,6 +348,7 @@ async function handleLogin(request, env) {
   const username = String(body.username || '').trim();
   const password = String(body.password || '');
   if (!username || !password) throw new HttpError('请输入用户名和密码');
+  checkRate(rateKey('login', username), 5, 300);
 
   const user = await env.DB.prepare('SELECT id, username, role, pass, salt FROM users WHERE username = ?1')
     .bind(username).first();
@@ -445,10 +360,10 @@ async function handleLogin(request, env) {
   const now = Math.floor(Date.now() / 1000);
   const token = randomHex(32);
   await env.DB.prepare('INSERT INTO sessions (token, user_id, expires_at) VALUES (?1, ?2, ?3)')
-    .bind(token, user.id, now + SESSION_DAYS * 86400).run();
+    .bind(token, user.id, now + SESSION_SEC).run();
 
   const headers = new Headers({ 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-  headers.append('Set-Cookie', sessionCookie(token, SESSION_DAYS * 86400));
+  headers.append('Set-Cookie', sessionCookie(token, SESSION_SEC));
   return new Response(JSON.stringify({ ok: true, user: { username: user.username, role: user.role } }), { status: 200, headers });
 }
 
@@ -499,8 +414,6 @@ async function handleAdmin(request, env, user) {
   throw new HttpError('未知操作');
 }
 
-/* ---------------- 入口 ---------------- */
-
 export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
@@ -513,7 +426,15 @@ export async function onRequest(context) {
     }
 
     if (method === 'OPTIONS') {
-      return new Response(null, { status: 204 });
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'access-control-allow-origin': url.origin,
+          'access-control-allow-methods': 'GET,POST,OPTIONS',
+          'access-control-allow-headers': 'Content-Type',
+          'access-control-allow-credentials': 'true'
+        }
+      });
     }
 
     const user = await currentUser(request, env);
@@ -543,10 +464,6 @@ export async function onRequest(context) {
         if (method !== 'POST') return fail('不支持的请求方法', 405);
         return await handleLike(request, env, user);
 
-      case 'send-code':
-        if (method !== 'POST') return fail('不支持的请求方法', 405);
-        return await handleSendCode(request, env);
-
       case 'register':
         if (method !== 'POST') return fail('不支持的请求方法', 405);
         return await handleRegister(request, env);
@@ -570,6 +487,7 @@ export async function onRequest(context) {
     }
   } catch (err) {
     if (err instanceof HttpError) return fail(err.message, err.status);
+    console.error(err);
     return fail('服务器开小差了：' + (err && err.message ? err.message : '未知错误'), 500);
   }
 }

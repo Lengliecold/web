@@ -6,6 +6,15 @@
 <title>校园论坛 · 福州鳌峰学校</title>
 <link rel="icon" href="favicon.ico">
 <script>history.scrollRestoration = 'manual';</script>
+<script>
+document.addEventListener('keydown', function (e) {
+  var k = e.keyCode || e.which;
+  if (k === 123) { e.preventDefault(); return false; }
+  if (e.ctrlKey && e.shiftKey && (k === 73 || k === 74 || k === 67)) { e.preventDefault(); return false; }
+  if (e.ctrlKey && k === 85) { e.preventDefault(); return false; }
+});
+document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+</script>
 <style>
   :root {
     --ink: #16181d;
@@ -34,7 +43,7 @@
   a { text-decoration: none; color: inherit; }
   button, input, select, textarea { font: inherit; color: inherit; }
 
-  /* ===== 顶栏 ===== */
+  
   header {
     position: sticky; top: 0; z-index: 60;
     background: rgba(240, 239, 233, 0.94);
@@ -70,7 +79,7 @@
     max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
-  /* ===== 按钮 ===== */
+  
   .btn {
     display: inline-flex; align-items: center; justify-content: center;
     gap: 6px; padding: 9px 16px; min-height: 40px;
@@ -87,7 +96,7 @@
   .btn.danger { background: transparent; border-color: var(--line); color: var(--danger); }
   .btn.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
 
-  /* ===== 论坛题头 ===== */
+  
   .masthead { background: var(--navy); color: #f2eee5; padding: 36px 20px 30px; }
   .mast-inner {
     max-width: 1180px; margin: 0 auto;
@@ -108,7 +117,7 @@
   }
   .mast-stats span { font-size: 11px; letter-spacing: 2px; color: rgba(242, 238, 229, .5); }
 
-  /* ===== 主体 ===== */
+  
   .shell { max-width: 1180px; margin: 0 auto; padding: 0 20px; }
   .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; padding: 22px 0 60px; }
   .grid > aside, .grid > main { min-width: 0; }
@@ -168,7 +177,7 @@
   }
   .search button:hover { color: var(--navy); }
 
-  /* ===== 帖子列表 ===== */
+  
   .thread-row {
     display: grid;
     grid-template-columns: 1fr auto;
@@ -218,7 +227,7 @@
   }
   .empty strong { display: block; font-family: var(--serif); font-size: 16px; color: var(--navy); margin-bottom: 6px; letter-spacing: 2px; }
 
-  /* ===== 帖子详情 ===== */
+  
   .post-head { padding: 20px 18px 16px; border-bottom: 1px solid var(--line); }
   .crumb { font-size: 12px; color: var(--muted); margin-bottom: 10px; letter-spacing: .5px; }
   .crumb a:hover { color: var(--navy); }
@@ -272,7 +281,7 @@
   .login-tip { padding: 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
   .login-tip .btn { margin-left: 8px; }
 
-  /* ===== 发帖 ===== */
+  
   .compose { padding: 20px 18px 24px; }
   .compose h2 { font-family: var(--serif); font-size: 18px; color: var(--navy); letter-spacing: 2px; margin-bottom: 16px; }
   .field { margin-bottom: 16px; }
@@ -280,7 +289,7 @@
   .compose .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
   .compose .count { font-size: 12px; color: var(--muted); }
 
-  /* ===== 弹层 ===== */
+  
   .overlay {
     position: fixed; inset: 0; z-index: 90;
     background: rgba(10, 20, 32, .55);
@@ -314,7 +323,7 @@
   .modal-tip { font-size: 12px; color: var(--muted); margin-top: 12px; line-height: 1.7; }
   .modal-note { font-size: 13px; color: var(--danger); min-height: 20px; margin-top: 10px; }
 
-  /* ===== 轻提示 ===== */
+  
   .toast {
     position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%) translateY(12px);
     background: var(--navy); color: #f2eee5; font-size: 13px;
@@ -328,7 +337,7 @@
   footer { background: #0a1c2c; color: rgba(242, 238, 229, .45); padding: 18px 20px; font-size: 12px; letter-spacing: 1px; }
   footer .foot-inner { max-width: 1180px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 8px 18px; }
 
-  /* ===== 窄屏修正 ===== */
+  
   @media (max-width: 959px) {
     .grid.focus-mode > aside { display: none; }
     body.thread-view .masthead { display: none; }
@@ -352,7 +361,7 @@
     .toast { bottom: 20px; }
   }
 
-  /* ===== 宽屏 ===== */
+  
   @media (min-width: 960px) {
     .grid { grid-template-columns: 224px minmax(0, 1fr); gap: 24px; padding: 30px 0 72px; }
     .cat-list { flex-direction: column; overflow: visible; }
@@ -456,7 +465,7 @@
   var authModal = document.getElementById('authModal');
   var toastEl = document.getElementById('toast');
 
-  /* ---------- 工具 ---------- */
+  
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -508,7 +517,7 @@
     });
   }
 
-  /* ---------- 会话与导航 ---------- */
+  
 
   function renderNav() {
     if (state.user) {
@@ -550,7 +559,7 @@
     catList.innerHTML = html;
   }
 
-  /* ---------- 列表视图 ---------- */
+  
 
   function showList(slug, q) {
     document.querySelector('.grid').classList.remove('focus-mode');
@@ -646,7 +655,7 @@
     });
   }
 
-  /* ---------- 帖子视图 ---------- */
+  
 
   function showThread(id, page) {
     renderCats('');
@@ -768,7 +777,7 @@
     }).join('');
   }
 
-  /* ---------- 发帖视图 ---------- */
+  
 
   function showComposer() {
     var catFromHash = (location.hash.split('?')[1] || '');
@@ -823,7 +832,7 @@
     });
   }
 
-  /* ---------- 登录注册 ---------- */
+  
 
   function openAuth(mode) {
     renderAuth(mode || 'login');
@@ -913,7 +922,7 @@
     if (e.key === 'Escape' && !authOverlay.hidden) closeAuth();
   });
 
-  /* ---------- 路由 ---------- */
+  
 
   function route() {
     var hash = location.hash.replace(/^#/, '') || '/';
@@ -927,7 +936,7 @@
     return showList('', '');
   }
 
-  /* ---------- 启动 ---------- */
+  
 
   function boot() {
     document.getElementById('year').textContent = new Date().getFullYear();
