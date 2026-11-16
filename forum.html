@@ -4,17 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>校园论坛 · 福州鳌峰学校</title>
-<link rel="icon" href="favicon.ico">
+<link rel="icon" href="data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20fill='%230e2a45'/%3E%3Cpath%20d='M16%2025V9m0%200l-6%206m6-6l6%206'%20stroke='%23fff'%20stroke-width='2.5'%20fill='none'/%3E%3C/svg%3E">
 <script>history.scrollRestoration = 'manual';</script>
-<script>
-document.addEventListener('keydown', function (e) {
-  var k = e.keyCode || e.which;
-  if (k === 123) { e.preventDefault(); return false; }
-  if (e.ctrlKey && e.shiftKey && (k === 73 || k === 74 || k === 67)) { e.preventDefault(); return false; }
-  if (e.ctrlKey && k === 85) { e.preventDefault(); return false; }
-});
-document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-</script>
+<script src="assets/app.js"></script>
 <style>
   :root {
     --ink: #16181d;
@@ -386,13 +378,13 @@ document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
 <header>
   <div class="nav">
-    <a class="logo" href="/">
-      <span class="logo-mark"><img src="1.webp" alt="福州鳌峰学校标志" decoding="async" width="28" height="28"></span>
+    <a class="logo" href="index.html">
+      <span class="logo-mark"><img src="1.webp" alt="福州鳌峰学校标志" decoding="async" width="28" height="28" onerror="this.remove()"></span>
       <span class="logo-text">福州鳌峰学校</span>
     </a>
     <div class="nav-links">
-      <a class="nav-link home-link" href="/">首页</a>
-      <a class="nav-link active" href="/forum.html">校园论坛</a>
+      <a class="nav-link home-link" href="index.html">首页</a>
+      <a class="nav-link active" href="forum.html">校园论坛</a>
       <div class="nav-user" id="navUser"></div>
     </div>
   </div>
@@ -502,6 +494,9 @@ document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
   function api(path, opts) {
     opts = opts || {};
+    if (location.protocol === 'file:') {
+      return Promise.reject(new Error('本地预览模式：/api 接口不可用，请通过服务器访问'));
+    }
     var init = {
       method: opts.method || 'GET',
       credentials: 'same-origin',

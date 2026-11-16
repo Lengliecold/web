@@ -1,19 +1,11 @@
-﻿<!DOCTYPE html>
+﻿﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>福州鳌峰学校</title>
 <script>history.scrollRestoration = 'manual';</script>
-<script>
-document.addEventListener('keydown', function (e) {
-  var k = e.keyCode || e.which;
-  if (k === 123) { e.preventDefault(); return false; }
-  if (e.ctrlKey && e.shiftKey && (k === 73 || k === 74 || k === 67)) { e.preventDefault(); return false; }
-  if (e.ctrlKey && k === 85) { e.preventDefault(); return false; }
-});
-document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-</script>
+<script src="assets/app.js"></script>
 <style>
   :root {
     --ink: #16181d;
@@ -278,13 +270,13 @@ document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   <div class="nav-wrap">
     <div class="logo">
       <span class="logo-mark">
-        <img src="1.webp" alt="福州鳌峰学校标志" decoding="async" width="30" height="30">
+        <img src="1.webp" alt="福州鳌峰学校标志" decoding="async" width="30" height="30" onerror="this.remove()">
       </span>
       <span>福州鳌峰学校</span>
     </div>
     <div class="nav-right">
-      <a class="nav-item active" href="/">首页</a>
-      <a class="nav-item" href="/forum.html">校园论坛</a>
+      <a class="nav-item active" href="index.html">首页</a>
+      <a class="nav-item" href="forum.html">校园论坛</a>
       <span class="nav-badge">公办九年一贯制 · 台江区</span>
     </div>
   </div>
